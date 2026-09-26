@@ -1,0 +1,7 @@
+{
+  "name": "musiq",
+  "private": true,
+  "type": "module",
+  "module": "./musiq.mjs",
+  "types": "./musiq.d.ts"
+}
