@@ -6,7 +6,6 @@
 	"bracketSpacing": false,
 	"arrowParens": "always",
 	"endOfLine": "lf",
-	"insertPragma": true,
 	"useTabs": true,
-	"printWidth": 160
+	"printWidth": 1000
 }
