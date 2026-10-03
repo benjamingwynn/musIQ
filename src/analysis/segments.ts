@@ -1,12 +1,25 @@
 import type {DetectedSegment} from "../types.js"
 import type {FeatureFrame, FeatureTimeline} from "../dsp/features.js"
 import type {LoudnessTimeline} from "../dsp/loudness.js"
+import {clamp, percentile} from "../math.js"
+
+const SPECTRUM_BAND_COUNT = 8
 
 function mean(frames: FeatureFrame[], pick: (frame: FeatureFrame) => number): number {
 	if (frames.length === 0) return 0
 	let sum = 0
 	for (const frame of frames) sum += pick(frame)
 	return sum / frames.length
+}
+
+function meanSpectrum(frames: FeatureFrame[]): Float32Array {
+	const spectrum = new Float32Array(SPECTRUM_BAND_COUNT)
+	if (!frames.length) return spectrum
+	for (const frame of frames) {
+		for (let i = 0; i < spectrum.length; i++) spectrum[i] = (spectrum[i] ?? 0) + (frame.bands[i] ?? 0)
+	}
+	for (let i = 0; i < spectrum.length; i++) spectrum[i] = (spectrum[i] ?? 0) / frames.length
+	return spectrum
 }
 
 export function makeSegments(timeline: FeatureTimeline, loudness: LoudnessTimeline, perSecond = 10): DetectedSegment[] {
@@ -45,11 +58,28 @@ export function makeSegments(timeline: FeatureTimeline, loudness: LoudnessTimeli
 			midEnergy: mean(frames, (f) => f.midEnergy),
 			highEnergy: mean(frames, (f) => f.highEnergy),
 			zeroCrossingRate: mean(frames, (f) => f.zcr),
+			spectrum: meanSpectrum(frames),
 			perceivedLoudness: loudnessPoint?.perceivedLoudness ?? 0,
 			trueLoudness: loudnessPoint?.trueLoudness ?? -120,
 		}
 		previousRms = rmsEnergy
 		segments.push(segment)
+	}
+
+	// Use one robust track-wide reference so adjacent segments are comparable and
+	// quiet passages remain quiet. A handful of spectral spikes may clip without
+	// compressing the response curve for the rest of the track.
+	const spectrumValues: number[] = []
+	for (const segment of segments) {
+		for (const value of segment.spectrum) spectrumValues.push(value)
+	}
+	const spectrumReference = percentile(spectrumValues, 0.995)
+	if (spectrumReference > 0) {
+		for (const segment of segments) {
+			for (let i = 0; i < segment.spectrum.length; i++) {
+				segment.spectrum[i] = clamp((segment.spectrum[i] ?? 0) / spectrumReference)
+			}
+		}
 	}
 	return segments
 }

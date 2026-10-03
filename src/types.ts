@@ -30,6 +30,8 @@ export type DetectedSegment = {
 	midEnergy: number
 	highEnergy: number
 	zeroCrossingRate: number
+	/** Eight log-spaced spectrum bands spanning roughly 40 Hz to 16 kHz, low to high, normalized to 0..1 across the track. */
+	spectrum: Float32Array
 	perceivedLoudness: number
 	/** EBU-style momentary programme loudness, in LUFS. */
 	trueLoudness: number
