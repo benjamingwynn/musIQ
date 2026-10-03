@@ -1,7 +1,27 @@
 {
   "name": "musiq",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
-  "module": "./musiq.mjs",
-  "types": "./musiq.d.ts"
+  "description": "Clean-slate musIQ implementation preserving the existing public analysis API.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build/build.mjs",
+    "test": "rm -rf .test-dist && tsc -p tsconfig.test.json && node --test .test-dist/test/*.test.js"
+  },
+  "dependencies": {
+    "aubiojs": "^0.2.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.1",
+    "typescript": ">=5.8"
+  },
+  "main": "./dist/musiq.mjs",
+  "types": "./dist/musiq.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/musiq.d.ts",
+      "import": "./dist/musiq.mjs"
+    }
+  }
 }

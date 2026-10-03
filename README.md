@@ -15,14 +15,4 @@ Detects the following musical features:
 
 This can be used as an in-browser replacement for Spotify's Audio Analysis API or other SaSS products for audio analysis, assuming you have the file available to the browser.
 
-Underneath it's powered by tensorflow.js for AI models and [aubiojs](https://github.com/qiuxiang/aubiojs) in a web worker for beat detection.
-
-This repo includes the trained models, typescript declarations and Javascript code to run the engine.
-
-If you have setup frontend bundling, install `@benjamingwynn/musiq` and import `makeAnalyser` to begin.
-
-## Compatibility
-
-- Works well in Chromium based browsers.
-- Very slow in Safari, needs further investigation.
-- Unreliable and slow in Firefox requiring a hack.
+Underneath it's powered by [aubiojs](https://github.com/qiuxiang/aubiojs) in a web worker.

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": ".test-dist",
+    "rootDir": "."
+  },
+  "include": ["src/dsp/**/*.ts", "src/analysis/segments.ts", "src/analysis/keys.ts", "src/analysis/tatums.ts", "src/analysis/sections.ts", "src/analysis/beat-grid.ts", "src/math.ts", "src/types.ts", "test/**/*.ts"]
+}

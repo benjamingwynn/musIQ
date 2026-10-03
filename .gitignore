@@ -1,1 +1,4 @@
-.history
+dist
+.build-check
+node_modules
+*.md
