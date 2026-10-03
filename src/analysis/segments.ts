@@ -1,9 +1,8 @@
 import type {DetectedSegment} from "../types.js"
 import type {FeatureFrame, FeatureTimeline} from "../dsp/features.js"
+import {SPECTRUM_BAND_COUNT} from "../dsp/features.js"
 import type {LoudnessTimeline} from "../dsp/loudness.js"
 import {clamp, percentile} from "../math.js"
-
-const SPECTRUM_BAND_COUNT = 8
 
 function mean(frames: FeatureFrame[], pick: (frame: FeatureFrame) => number): number {
 	if (frames.length === 0) return 0

@@ -40,6 +40,8 @@ export type ExtractFeatureOptions = {
 	bandCount?: number
 }
 
+export const SPECTRUM_BAND_COUNT = 24
+
 function aWeightingDb(f: number): number {
 	if (f <= 0) return -100
 	const f2 = f * f
@@ -114,7 +116,7 @@ function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: n
 export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, options: ExtractFeatureOptions = {}): FeatureTimeline {
 	const frameSize = options.frameSize ?? 2048
 	const hopSize = options.hopSize ?? 512
-	const bandCount = options.bandCount ?? 8
+	const bandCount = options.bandCount ?? SPECTRUM_BAND_COUNT
 	if ((frameSize & (frameSize - 1)) !== 0) throw new Error("frameSize must be a power of two")
 	if (hopSize <= 0) throw new Error("hopSize must be positive")
 

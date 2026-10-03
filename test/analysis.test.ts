@@ -26,7 +26,7 @@ test("decoded pulse audio passes through aubio and the complete analysis pipelin
 	assert.equal(result.segments.length, duration * 10)
 	assert.ok(result.segments.some((segment) => Math.max(...segment.spectrum) > 0.5))
 	for (const segment of result.segments) {
-		assert.equal(segment.spectrum.length, 8)
+		assert.equal(segment.spectrum.length, 24)
 		for (const value of segment.spectrum) assert.ok(Number.isFinite(value) && value >= 0 && value <= 1)
 	}
 	assert.equal(result.sections[0]?.start, 0)
@@ -49,7 +49,7 @@ test("silent decoded audio produces no rhythmic events", async () => {
 	assert.deepEqual(result.tatums, [])
 	assert.equal(result.sections.length, 1)
 	for (const segment of result.segments) {
-		assert.equal(segment.spectrum.length, 8)
-		assert.deepEqual(Array.from(segment.spectrum), Array(8).fill(0))
+		assert.equal(segment.spectrum.length, 24)
+		assert.deepEqual(Array.from(segment.spectrum), Array(24).fill(0))
 	}
 })
