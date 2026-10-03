@@ -15,16 +15,18 @@ function framesAround(timeline: FeatureTimeline, time: number, seconds: number):
 	return timeline.frames.slice(Math.max(0, center - radius), Math.min(timeline.frames.length, center + radius + 1))
 }
 
-function localPeak(timeline: FeatureTimeline, time: number, pick: (frame: FeatureFrame) => number): number {
+function localPeak(timeline: FeatureTimeline, time: number, pick: (frame: FeatureFrame) => number, tolerance: number): number {
 	// Beat timestamps and attack peaks need not coincide exactly. SuperFlux-style
 	// onset evaluation commonly uses tens-of-ms peak windows; give the grid 70 ms.
 	let peak = 0
-	for (const frame of framesAround(timeline, time, 0.07)) peak = Math.max(peak, Math.max(0, pick(frame)))
+	for (const frame of framesAround(timeline, time, tolerance)) {
+		if (Math.abs(frame.center - time) <= tolerance) peak = Math.max(peak, Math.max(0, pick(frame)))
+	}
 	return peak
 }
 
-function adaptiveSupport(timeline: FeatureTimeline, time: number, pick: (frame: FeatureFrame) => number, globalHigh: number): number {
-	const peak = localPeak(timeline, time, pick)
+function adaptiveSupport(timeline: FeatureTimeline, time: number, pick: (frame: FeatureFrame) => number, globalHigh: number, tolerance: number): number {
+	const peak = localPeak(timeline, time, pick, tolerance)
 	if (!(peak > 0)) return 0
 
 	// A several-second context lets the threshold adapt when a track moves from a
@@ -46,15 +48,14 @@ function adaptiveSupport(timeline: FeatureTimeline, time: number, pick: (frame: 
 	return clamp(Math.sqrt(localContrast * globalContrast))
 }
 
-export type BeatSalience = {
-	beat: RawBeat
+export type OnsetEvidence = {
 	evidence: number
 	fullBandEvidence: number
 	bassEvidence: number
 }
 
-export function beatSalience(beats: RawBeat[], timeline: FeatureTimeline): BeatSalience[] {
-	if (!beats.length || !timeline.frames.length) return []
+/** Reuse the track reference levels when evaluating beats or subdivisions. */
+export function createOnsetEvidence(timeline: FeatureTimeline): (time: number, tolerance?: number) => OnsetEvidence {
 	const fullGlobal = Math.max(
 		EPS,
 		percentile(
@@ -70,14 +71,22 @@ export function beatSalience(beats: RawBeat[], timeline: FeatureTimeline): BeatS
 		)
 	)
 
-	return beats.map((beat) => {
-		const fullBandEvidence = adaptiveSupport(timeline, beat.start, (frame) => frame.onsetStrength, fullGlobal)
-		const bassEvidence = adaptiveSupport(timeline, beat.start, (frame) => frame.lowOnsetStrength, bassGlobal)
+	return (time, tolerance = 0.07) => {
+		const fullBandEvidence = adaptiveSupport(timeline, time, (frame) => frame.onsetStrength, fullGlobal, tolerance)
+		const bassEvidence = adaptiveSupport(timeline, time, (frame) => frame.lowOnsetStrength, bassGlobal, tolerance)
 		// Bass helps distinguish a kick-defined pulse from hats/subdivisions, but a
 		// snare/clap must be allowed to support a beat on its own.
 		const evidence = clamp(fullBandEvidence * 0.78 + bassEvidence * 0.22)
-		return {beat, evidence, fullBandEvidence, bassEvidence}
-	})
+		return {evidence, fullBandEvidence, bassEvidence}
+	}
+}
+
+export type BeatSalience = OnsetEvidence & {beat: RawBeat}
+
+export function beatSalience(beats: RawBeat[], timeline: FeatureTimeline): BeatSalience[] {
+	if (!beats.length || !timeline.frames.length) return []
+	const evidenceAt = createOnsetEvidence(timeline)
+	return beats.map((beat) => ({beat, ...evidenceAt(beat.start)}))
 }
 
 /**

@@ -6,10 +6,6 @@ const CHROMA_DIMS = 12
 const BAND_DIMS = 8
 const DIMS = CHROMA_DIMS + BAND_DIMS + 2
 
-function framesBetween(timeline: FeatureTimeline, start: number, end: number): FeatureFrame[] {
-	return timeline.frames.filter((frame) => frame.center >= start && frame.center < end)
-}
-
 function intervalFeature(frames: FeatureFrame[]): Float32Array {
 	const vector = new Float32Array(DIMS)
 	if (frames.length === 0) return vector
@@ -28,13 +24,22 @@ function intervalFeature(frames: FeatureFrame[]): Float32Array {
 }
 
 function makeUnits(timeline: FeatureTimeline, beats: DetectedBeat[]): {start: number; end: number; feature: Float32Array}[] {
+	// Intervals are ordered and disjoint. Visit each frame at most once instead
+	// of scanning the entire track for every beat (or fallback second).
+	let cursor = 0
+	const framesBetween = (start: number, end: number): FeatureFrame[] => {
+		while (cursor < timeline.frames.length && timeline.frames[cursor]!.center < start) cursor++
+		const first = cursor
+		while (cursor < timeline.frames.length && timeline.frames[cursor]!.center < end) cursor++
+		return timeline.frames.slice(first, cursor)
+	}
 	if (beats.length >= 8) {
 		const units: {start: number; end: number; feature: Float32Array}[] = []
 		for (let i = 0; i < beats.length; i++) {
 			const start = beats[i]?.start ?? 0
 			const end = beats[i + 1]?.start ?? timeline.duration
 			if (end <= start) continue
-			units.push({start, end, feature: intervalFeature(framesBetween(timeline, start, end))})
+			units.push({start, end, feature: intervalFeature(framesBetween(start, end))})
 		}
 		return units
 	}
@@ -43,7 +48,7 @@ function makeUnits(timeline: FeatureTimeline, beats: DetectedBeat[]): {start: nu
 	const units: {start: number; end: number; feature: Float32Array}[] = []
 	for (let start = 0; start < timeline.duration; start += 1) {
 		const end = Math.min(timeline.duration, start + 1)
-		units.push({start, end, feature: intervalFeature(framesBetween(timeline, start, end))})
+		units.push({start, end, feature: intervalFeature(framesBetween(start, end))})
 	}
 	return units
 }

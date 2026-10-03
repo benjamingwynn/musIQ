@@ -94,7 +94,6 @@ function fakeBeatTimeline(bpm: number, strongEveryOther: boolean): {timeline: Fe
 		highFlux: 0.002,
 		onsetStrength: 0.01,
 		lowOnsetStrength: 0.005,
-		onsetShapeChange: 1,
 		chroma: new Float32Array(12),
 		bands: new Float32Array(8),
 	}))
@@ -220,4 +219,153 @@ test("salient beat gate does not turn a smooth pitch glide into repeated attacks
 	const grid = regularRawBeats(duration, 120)
 	const salient = selectSalientBeats(grid, timeline)
 	assert.ok(salient.length <= 1, `kept ${salient.length}/${grid.length} beats through a glide`)
+})
+
+import {makeTatums} from "../src/analysis/tatums.js"
+import type {DetectedBeat} from "../src/types.js"
+
+function detectedBeats(beats: RawBeat[]): DetectedBeat[] {
+	return beats.map((beat, index) => ({...beat, index, perceivedLoudness: 0.5, trueLoudness: -16}))
+}
+
+function clearOnsets(timeline: FeatureTimeline, floor = 0): void {
+	for (const frame of timeline.frames) {
+		frame.onsetStrength = floor
+		frame.lowOnsetStrength = floor
+	}
+}
+
+function addOnset(timeline: FeatureTimeline, time: number, strength = 10): void {
+	const index = Math.round((time * timeline.sampleRate - timeline.frameSize / 2) / timeline.hopSize)
+	const frame = timeline.frames[index]
+	if (frame) {
+		frame.onsetStrength = strength
+		frame.lowOnsetStrength = strength * 0.8
+	}
+}
+
+for (const floor of [0, 1e-9, 1]) {
+	test(`tatums do not invent subdivisions from a flat onset floor of ${floor}`, () => {
+		const {timeline, beats} = fakeBeatTimeline(120, false)
+		clearOnsets(timeline, floor)
+		const tatums = makeTatums(detectedBeats(beats), timeline)
+		assert.deepEqual(tatums.map((tatum) => tatum.start), beats.map((beat) => beat.start))
+		assert.ok(tatums.every((tatum) => tatum.confidence === 0.8))
+	})
+}
+
+for (const subdivision of [2, 3, 4]) {
+	test(`tatums retain a supported ${subdivision}-way subdivision`, () => {
+		const {timeline, beats} = fakeBeatTimeline(120, false)
+		clearOnsets(timeline)
+		const expected: number[] = []
+		for (let i = 0; i < beats.length - 1; i++) {
+			for (let k = 0; k < subdivision; k++) {
+				const start = beats[i]!.start + (beats[i + 1]!.start - beats[i]!.start) * k / subdivision
+				expected.push(start)
+				addOnset(timeline, start)
+			}
+		}
+		expected.push(beats[beats.length - 1]!.start)
+		addOnset(timeline, expected[expected.length - 1]!)
+		const tatums = makeTatums(detectedBeats(beats), timeline)
+		assert.equal(tatums.length, expected.length)
+		for (let i = 0; i < expected.length; i++) {
+			assert.ok(Math.abs(tatums[i]!.start - expected[i]!) < 1e-8)
+			assert.equal(tatums[i]!.index, i)
+			assert.ok(tatums[i]!.confidence >= 0 && tatums[i]!.confidence <= 1)
+		}
+	})
+}
+
+test("fast beat attacks cannot support neighbouring tatum subdivisions", () => {
+	const {timeline, beats} = fakeBeatTimeline(240, false)
+	clearOnsets(timeline)
+	for (const beat of beats) addOnset(timeline, beat.start)
+	assert.deepEqual(makeTatums(detectedBeats(beats), timeline).map((tatum) => tatum.start), beats.map((beat) => beat.start))
+})
+
+function passageTimeline(passages: {bpm: number; halfTime: boolean}[]): {timeline: FeatureTimeline; beats: RawBeat[]; boundaries: number[]} {
+	const base = fakeBeatTimeline(160, false).timeline
+	const beats: RawBeat[] = []
+	const boundaries: number[] = []
+	let time = 1
+	for (const passage of passages) {
+		boundaries.push(time)
+		for (let i = 0; i < 48; i++) {
+			beats.push({start: time, confidence: 0.8, bpm: passage.bpm})
+			time += 60 / passage.bpm
+		}
+	}
+	boundaries.push(time)
+	const frames = Array.from({length: Math.ceil((time + 1) * base.sampleRate / base.hopSize)}, (_, i) => ({
+		...base.frames[0]!,
+		start: i * base.hopSize / base.sampleRate,
+		center: (i * base.hopSize + base.frameSize / 2) / base.sampleRate,
+		onsetStrength: 0,
+		lowOnsetStrength: 0,
+	}))
+	const timeline = {...base, duration: time + 1, frames}
+	for (let i = 0; i < beats.length; i++) {
+		const passage = passages[Math.floor(i / 48)]!
+		addOnset(timeline, beats[i]!.start, !passage.halfTime || i % 2 === 0 ? 10 : 0.1)
+	}
+	return {timeline, beats, boundaries}
+}
+
+function assertPassageGrids(passages: {bpm: number; halfTime: boolean}[]): void {
+	const {timeline, beats} = passageTimeline(passages)
+	const resolved = resolveBeatGrid(beats, timeline)
+	for (let p = 0; p < passages.length; p++) {
+		// Leave the local evidence window around a transition unconstrained.
+		const interior = beats.slice(p * 48 + 12, (p + 1) * 48 - 12)
+		const kept = resolved.filter((beat) => beat.start >= interior[0]!.start && beat.start <= interior[interior.length - 1]!.start)
+		const expectedCount = interior.length / (passages[p]!.halfTime ? 2 : 1)
+		assert.equal(kept.length, expectedCount, `passage ${p}: expected ${expectedCount}, got ${kept.length}`)
+		const expectedBpm = passages[p]!.bpm / (passages[p]!.halfTime ? 2 : 1)
+		for (const beat of kept) assert.ok(Math.abs(beat.bpm - expectedBpm) < 0.01)
+	}
+	for (let i = 1; i < resolved.length; i++) assert.ok(resolved[i]!.start > resolved[i - 1]!.start)
+}
+
+test("half-time correction follows local rhythmic emphasis at a constant raw tempo", () => {
+	assertPassageGrids([{bpm: 160, halfTime: true}, {bpm: 160, halfTime: false}, {bpm: 160, halfTime: true}])
+})
+
+test("half-time correction does not spill across tempo or tracker-octave changes", () => {
+	assertPassageGrids([{bpm: 160, halfTime: true}, {bpm: 80, halfTime: false}, {bpm: 160, halfTime: true}, {bpm: 120, halfTime: false}])
+})
+
+test("half-time phase follows a sustained accent change", () => {
+	const {timeline, beats} = passageTimeline([{bpm: 160, halfTime: true}, {bpm: 160, halfTime: true}])
+	for (let i = 48; i < beats.length; i++) addOnset(timeline, beats[i]!.start, i % 2 === 1 ? 10 : 0.1)
+	const resolved = resolveBeatGrid(beats, timeline)
+	// Require the new phase within four input beats, including the rest of the track.
+	const later = resolved.filter((beat) => beat.start >= beats[52]!.start)
+	assert.ok(later.length >= 20)
+	for (const beat of later) {
+		const index = beats.findIndex((raw) => raw.start === beat.start)
+		assert.equal(index % 2, 1, `weak phase retained at input beat ${index}`)
+		assert.ok(Math.abs(beat.bpm - 80) < 0.01)
+	}
+})
+
+for (const missing of [[20], [21], [20, 21], [35, 70]]) {
+	test(`missing raw beats (${missing.join(", ")}) preserve phase and tempo`, () => {
+		const {timeline, beats} = passageTimeline([{bpm: 160, halfTime: true}, {bpm: 160, halfTime: true}])
+		const raw = beats.filter((_, i) => !missing.includes(i))
+		const resolved = resolveBeatGrid(raw, timeline)
+		const expected = beats.filter((_, i) => i % 2 === 0 && !missing.includes(i))
+		assert.deepEqual(resolved.map((beat) => beat.start), expected.map((beat) => beat.start))
+		for (const beat of resolved) assert.ok(Math.abs(beat.bpm - 80) < 0.01, `unexpected ${beat.bpm} BPM at ${beat.start}`)
+	})
+}
+
+test("a real tempo change preserves beats and BPM at the transition itself", () => {
+	const {timeline, beats} = passageTimeline([{bpm: 120, halfTime: false}, {bpm: 80, halfTime: false}])
+	const resolved = resolveBeatGrid(beats, timeline)
+	assert.deepEqual(resolved.map((beat) => beat.start), beats.map((beat) => beat.start))
+	for (let i = 0; i < resolved.length; i++) {
+		assert.ok(Math.abs(resolved[i]!.bpm - (i < 48 ? 120 : 80)) < 0.01, `incorrect tempo at input beat ${i}`)
+	}
 })

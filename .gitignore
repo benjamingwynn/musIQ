@@ -1,4 +1,5 @@
 dist
 .build-check
+.test-dist
 node_modules
 *.md

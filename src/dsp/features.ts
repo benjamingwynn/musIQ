@@ -22,8 +22,6 @@ export type FeatureFrame = {
 	onsetStrength: number
 	/** Low-frequency component of onsetStrength (< 250 Hz). */
 	lowOnsetStrength: number
-	/** Spectral-shape change associated with the onset evidence (0 = steady timbre). */
-	onsetShapeChange: number
 	chroma: Float32Array
 	bands: Float32Array
 }
@@ -97,23 +95,7 @@ function onsetBandCenter(index: number): number {
  * log-frequency spectrum. The +/- one-band max follows local pitch motion
  * instead of interpreting vibrato as repeated note attacks.
  */
-function shiftedCosineSimilarity(current: Float32Array, previous: Float32Array, shift: number): number {
-	let dot = 0
-	let aa = 0
-	let bb = 0
-	for (let i = 0; i < current.length; i++) {
-		const j = i + shift
-		if (j < 0 || j >= previous.length) continue
-		const a = current[i] ?? 0
-		const b = previous[j] ?? 0
-		dot += a * b
-		aa += a * a
-		bb += b * b
-	}
-	return aa > 0 && bb > 0 ? dot / Math.sqrt(aa * bb) : 0
-}
-
-function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: number; low: number; shapeChange: number} {
+function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: number; low: number} {
 	let full = 0
 	let low = 0
 	for (let i = 0; i < current.length; i++) {
@@ -126,15 +108,7 @@ function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: n
 		if (onsetBandCenter(i) < 250) low += diff
 	}
 
-	// A held/tremolo note mostly changes level, not spectral shape. Vibrato moves
-	// that shape slightly in frequency, so compare against a handful of nearby
-	// quarter-tone shifts and retain the best match. A genuine attack tends to
-	// introduce a new broadband shape and therefore has larger shapeChange.
-	let bestSimilarity = 0
-	for (let shift = -3; shift <= 3; shift++) {
-		bestSimilarity = Math.max(bestSimilarity, shiftedCosineSimilarity(current, previous, shift))
-	}
-	return {full, low, shapeChange: clamp(1 - bestSimilarity, 0, 1)}
+	return {full, low}
 }
 
 export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, options: ExtractFeatureOptions = {}): FeatureTimeline {
@@ -147,8 +121,7 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 	const window = hann(frameSize)
 	const frames: FeatureFrame[] = []
 	let previousSpectrum: Float32Array | null = null
-	// SuperFlux compares against a slightly older frame (mu=2 in the paper's
-	// common configuration). At our 512-sample hop this is ~23 ms at 44.1 kHz.
+	// Retain the preceding log-frequency spectra for the onset comparison.
 	const onsetHistory: Float32Array[] = []
 	const duration = mono.length / sampleRate
 
@@ -226,7 +199,7 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 		// local maximum filter and turns pitch motion into fake attacks.
 		const targetLagFrames = Math.max(1, Math.round((0.01 * sampleRate) / hopSize))
 		const comparison = onsetHistory.length >= targetLagFrames ? onsetHistory[onsetHistory.length - targetLagFrames] : null
-		const robustFlux = comparison ? trajectoryFlux(onsetBands, comparison) : {full: 0, low: 0, shapeChange: 0}
+		const robustFlux = comparison ? trajectoryFlux(onsetBands, comparison) : {full: 0, low: 0}
 		onsetHistory.push(onsetBands)
 		if (onsetHistory.length > Math.max(3, targetLagFrames + 1)) onsetHistory.shift()
 
@@ -251,7 +224,6 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 			highFlux: Math.sqrt(highFlux),
 			onsetStrength: robustFlux.full,
 			lowOnsetStrength: robustFlux.low,
-			onsetShapeChange: robustFlux.shapeChange,
 			chroma,
 			bands,
 		})

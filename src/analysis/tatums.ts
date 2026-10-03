@@ -1,31 +1,7 @@
 import type {FeatureTimeline} from "../dsp/features.js"
 import type {DetectedBeat, PositionEstimate} from "../types.js"
 import {clamp} from "../math.js"
-
-function onsetEvidence(timeline: FeatureTimeline, time: number): number {
-	const frameIndex = Math.round((time * timeline.sampleRate) / timeline.hopSize)
-	const radius = 2
-	let localMax = 0
-	let localMean = 0
-	let count = 0
-	for (let i = Math.max(0, frameIndex - radius); i <= Math.min(timeline.frames.length - 1, frameIndex + radius); i++) {
-		const flux = timeline.frames[i]?.onsetStrength ?? 0
-		localMax = Math.max(localMax, flux)
-		localMean += flux
-		count++
-	}
-	if (count === 0 || localMax === 0) return 0
-	return clamp(localMean / count / localMax)
-}
-
-function candidateScore(timeline: FeatureTimeline, a: number, b: number, subdivisions: number): number {
-	let score = 0
-	for (let k = 1; k < subdivisions; k++) {
-		const t = a + ((b - a) * k) / subdivisions
-		score += onsetEvidence(timeline, t)
-	}
-	return score / Math.max(1, subdivisions - 1)
-}
+import {createOnsetEvidence} from "./beat-salience.js"
 
 /**
  * Estimate the tatum grid as the smallest perceptually-supported regular subdivision
@@ -35,6 +11,8 @@ function candidateScore(timeline: FeatureTimeline, a: number, b: number, subdivi
 export function makeTatums(beats: DetectedBeat[], timeline: FeatureTimeline): PositionEstimate[] {
 	if (beats.length < 2) return []
 	const tatums: PositionEstimate[] = []
+	const evidenceAt = createOnsetEvidence(timeline)
+	const minimumSupport = 0.23
 
 	for (let i = 0; i < beats.length - 1; i++) {
 		const current = beats[i]
@@ -43,24 +21,31 @@ export function makeTatums(beats: DetectedBeat[], timeline: FeatureTimeline): Po
 		const duration = next.start - current.start
 		if (!(duration > 0.12 && duration < 2.5)) continue
 
-		const options = [2, 3, 4]
-		let best = 2
-		let bestScore = -Infinity
-		for (const subdivision of options) {
-			// Prefer the simpler grid unless extra subdivision points have actual onset support.
-			const evidence = candidateScore(timeline, current.start, next.start, subdivision)
-			const complexityPenalty = (subdivision - 2) * 0.08
-			const score = evidence - complexityPenalty
+		// Keep the beat as an anchor; absent evidence must not invent subdivisions.
+		let bestSupport: number[] = []
+		let bestScore = 0
+		for (const subdivision of [2, 3, 4]) {
+			// A nearby beat or neighbouring subdivision must not support this point.
+			const tolerance = Math.min(0.035, duration / subdivision / 4)
+			const support: number[] = []
+			for (let k = 1; k < subdivision; k++) {
+				const time = current.start + (duration * k) / subdivision
+				support.push(evidenceAt(time, tolerance).evidence)
+			}
+			if (support.some((value) => value < minimumSupport)) continue
+			// Reward additional supported attacks, charging each point an evidence
+			// threshold. Sixteenths can beat eighths when all attacks are present.
+			const score = support.reduce((sum, value) => sum + value - minimumSupport, 0)
 			if (score > bestScore) {
-				best = subdivision
+				bestSupport = support
 				bestScore = score
 			}
 		}
 
-		for (let k = 0; k < best; k++) {
-			const start = current.start + (duration * k) / best
-			const support = k === 0 ? current.confidence : onsetEvidence(timeline, start)
-			tatums.push({start, confidence: clamp(0.35 + support * 0.65), index: tatums.length})
+		tatums.push({start: current.start, confidence: clamp(current.confidence), index: tatums.length})
+		for (let k = 0; k < bestSupport.length; k++) {
+			const start = current.start + (duration * (k + 1)) / (bestSupport.length + 1)
+			tatums.push({start, confidence: bestSupport[k] ?? 0, index: tatums.length})
 		}
 	}
 

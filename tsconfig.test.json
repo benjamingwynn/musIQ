@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.json",
+  // Inherit ESNext/Bundler to match production and aubiojs's default-export declarations.
+  // Node still executes the emitted ESM tests, but NodeNext resolution is not checked here.
   "compilerOptions": {
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
     "declaration": false,
     "declarationMap": false,
     "outDir": ".test-dist",
