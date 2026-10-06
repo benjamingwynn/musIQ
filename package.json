@@ -23,5 +23,6 @@
       "types": "./dist/musiq.d.ts",
       "import": "./dist/musiq.mjs"
     }
-  }
+  },
+  "files": ["dist", "musiq.d.ts"]
 }
