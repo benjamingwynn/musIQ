@@ -1,7 +1,6 @@
 {
-  "name": "musiq",
+  "name": "@benjamingwynn/musiq",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Clean-slate musIQ implementation preserving the existing public analysis API.",
   "scripts": {
