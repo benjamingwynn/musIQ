@@ -21,7 +21,9 @@ test("shared feature timeline produces finite truthful segment fields", () => {
 	const segments = makeSegments(timeline, loudness)
 	assert.ok(segments.length >= 19 && segments.length <= 21)
 	for (const segment of segments) {
-		for (const value of Object.values(segment)) assert.equal(Number.isFinite(value), true)
+		const {spectrum, ...scalarFields} = segment
+		for (const value of Object.values(scalarFields)) assert.equal(Number.isFinite(value), true)
+		for (const value of spectrum) assert.ok(Number.isFinite(value) && value >= 0 && value <= 1)
 		const bandSum = segment.lowEnergy + segment.midEnergy + segment.highEnergy
 		assert.ok(Math.abs(bandSum - 1) < 0.05)
 		assert.ok(segment.perceivedLoudness >= 0 && segment.perceivedLoudness <= 1)
