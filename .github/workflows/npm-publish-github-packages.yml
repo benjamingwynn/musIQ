@@ -2,7 +2,7 @@ name: Package
 
 on:
   push:
-    branches: [main]   # change to your branch
+    branches: [master]
 
 concurrency:
   group: package-${{ github.ref }}
