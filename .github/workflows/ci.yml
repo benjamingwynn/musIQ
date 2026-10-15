@@ -15,14 +15,8 @@ concurrency:
 
 jobs:
   verify:
-    name: Node ${{ matrix.node }}
+    name: Node 24
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node:
-          - 22
-          - 24
 
     steps:
       - name: Check out repository
@@ -31,7 +25,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
