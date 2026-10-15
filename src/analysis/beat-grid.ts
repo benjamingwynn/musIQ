@@ -3,6 +3,8 @@ import {percentile} from "../math.js"
 export type RawBeat = {start: number; confidence: number; bpm: number}
 
 const EPS = 1e-12
+const HALF_TIME_WEAK_PARITY_RATIO = 0.25
+const HALF_TIME_MIN_STRONG_PARITY = 0.25
 
 function median(values: number[]): number {
 	return percentile(values, 0.5)
@@ -76,6 +78,23 @@ function beatStrength(timeline: FeatureTimeline, time: number): number {
 	return Math.log1p(full) * 0.68 + Math.log1p(bass) * 0.32
 }
 
+function parityEvidence(strengths: number[], ticks: number[], index: number): [number, number] {
+	const sums = [0, 0]
+	const counts = [0, 0]
+	for (let j = Math.max(0, index - 4); j <= Math.min(strengths.length - 1, index + 4); j++) {
+		const phase = ticks[j]! % 2
+		sums[phase]! += strengths[j]!
+		counts[phase]!++
+	}
+	return [sums[0]! / Math.max(1, counts[0]!), sums[1]! / Math.max(1, counts[1]!)]
+}
+
+function supportsHalfTime(evidence: [number, number]): boolean {
+	const stronger = Math.max(evidence[0], evidence[1])
+	const weaker = Math.min(evidence[0], evidence[1])
+	return stronger >= HALF_TIME_MIN_STRONG_PARITY && weaker <= stronger * HALF_TIME_WEAK_PARITY_RATIO
+}
+
 function resolveRun(beats: RawBeat[], timeline: FeatureTimeline): RawBeat[] {
 	if (!beats.length) return []
 	const intervals = beats.slice(1).map((beat, i) => beat.start - beats[i]!.start)
@@ -115,16 +134,12 @@ function resolveRun(beats: RawBeat[], timeline: FeatureTimeline): RawBeat[] {
 				fullScore = score(bpm)
 				halfScore = score(bpm / 2)
 			}
-			const nextHalfTime: boolean = halfScore > fullScore * (halfTime ? 1 : 1.08)
+			const evidence = parityEvidence(strengths, ticks, i)
+			const spectralHalfTime: boolean = halfScore > fullScore * (halfTime ? 1 : 1.08)
+			// A strong alternating accent is not enough to call a fast grid double-time.
+			// Only halve when one parity is locally close to unsupported as well.
+			const nextHalfTime: boolean = spectralHalfTime && supportsHalfTime(evidence)
 			if (nextHalfTime) {
-				const sums = [0, 0]
-				const counts = [0, 0]
-				for (let j = Math.max(0, i - 4); j <= Math.min(beats.length - 1, i + 4); j++) {
-					const phase = ticks[j]! % 2
-					sums[phase]! += strengths[j]!
-					counts[phase]!++
-				}
-				const evidence = sums.map((sum, phase) => sum / Math.max(1, counts[phase]!))
 				const preferred = evidence[1]! > evidence[0]! ? 1 : 0
 				// Reconsider phase when several nearby attacks favour the other one.
 				// A margin retains continuity through ambiguous/equal accents.
