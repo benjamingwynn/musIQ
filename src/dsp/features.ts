@@ -15,7 +15,7 @@ export type FeatureFrame = {
 	lowFlux: number
 	midFlux: number
 	highFlux: number
-	/** SuperFlux-inspired, HPSS-weighted onset evidence. */
+	/** SuperFlux-inspired onset evidence. */
 	onsetStrength: number
 	/** Low-frequency component of onsetStrength (< 250 Hz). */
 	lowOnsetStrength: number
@@ -136,7 +136,7 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 
 	const window = hann(frameSize)
 	const frames: FeatureFrame[] = []
-	let previousPercussiveSpectrum: Float32Array | null = null
+	let previousSpectrum: Float32Array | null = null
 	const onsetHistory: Float32Array[] = []
 	const hpssHistory: Float32Array[] = []
 	const length = sampleLength(channels)
@@ -163,7 +163,8 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		const rms = Math.sqrt((sumSquares * invChannels) / frameSize)
 		const zcr = (crossings * invChannels) / Math.max(1, frameSize - 1)
 
-		// HPSS on the compact log-frequency representation keeps cost predictable.
+		// HPSS is deliberately restricted to tonal evidence. Beat/onset features
+		// stay on the raw spectrum so time-varying masks cannot manufacture attacks.
 		const rawBands = new Float32Array(bandCount)
 		for (let bin = 1; bin < spectrum.length; bin++) {
 			const frequency = (bin * sampleRate) / frameSize
@@ -185,25 +186,20 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		let highFlux = 0
 		const chroma = new Float32Array(12)
 		const onsetBands = new Float32Array(ONSET_BAND_COUNT)
-		const percussiveSpectrum = new Float32Array(spectrum.length)
 
 		for (let bin = 1; bin < spectrum.length; bin++) {
 			const power = spectrum[bin] ?? 0
 			const frequency = (bin * sampleRate) / frameSize
-			const band = logBandIndex(frequency, bandCount)
-			const percussiveWeight = 0.12 + 0.88 * (masks.percussive[band] ?? 0.5)
-			const percussivePower = power * percussiveWeight
-			percussiveSpectrum[bin] = percussivePower
 
 			totalPower += power
 			if (frequency < 250) low += power
 			else if (frequency < 2000) mid += power
 			else high += power
 			weightedPower += power * 10 ** (aWeightingDb(frequency) / 10)
-			addOnsetMagnitude(onsetBands, frequency, Math.sqrt(Math.max(0, percussivePower)))
+			addOnsetMagnitude(onsetBands, frequency, Math.sqrt(Math.max(0, power)))
 
-			if (previousPercussiveSpectrum) {
-				const diff = percussivePower - (previousPercussiveSpectrum[bin] ?? 0)
+			if (previousSpectrum) {
+				const diff = power - (previousSpectrum[bin] ?? 0)
 				if (diff > 0) {
 					flux += diff
 					if (frequency < 250) lowFlux += diff
@@ -246,7 +242,7 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		const loudnessDb = 20 * Math.log10(Math.sqrt(Math.max(weightedPower, 1e-20)))
 		const loudness = clamp((loudnessDb + 70) / 64)
 		frames.push({start: offset / sampleRate, center: (offset + frameSize / 2) / sampleRate, rms, zcr, lowEnergy: low * invTotal, midEnergy: mid * invTotal, highEnergy: high * invTotal, loudness, spectralFlux: Math.sqrt(flux), lowFlux: Math.sqrt(lowFlux), midFlux: Math.sqrt(midFlux), highFlux: Math.sqrt(highFlux), onsetStrength: robustFlux.full, lowOnsetStrength: robustFlux.low, chroma, bands})
-		previousPercussiveSpectrum = percussiveSpectrum
+		previousSpectrum = spectrum
 	}
 
 	return {sampleRate, duration, frameSize, hopSize, frames}
