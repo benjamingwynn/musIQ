@@ -6,6 +6,7 @@ const CHROMA_DIMS = 12
 const BAND_DIMS = 8
 const DIMS = CHROMA_DIMS + BAND_DIMS + 2
 const MAX_RECURRENCE_UNITS = 900
+const EPS = 1e-12
 
 function pooledBand(frame: FeatureFrame, group: number): number {
 	const sourceCount = frame.bands.length
@@ -71,6 +72,23 @@ function localNovelty(features: Float32Array[], boundary: number, radius: number
 	return tonal * 0.45 + timbral * 0.35 + loudness * 0.12 + onset * 0.08
 }
 
+/** Recurrence similarity treats empty/silent units as having no evidence, not as perfect matches. */
+function recurrenceSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
+	const n = Math.min(a.length, b.length)
+	let dot = 0
+	let aa = 0
+	let bb = 0
+	for (let i = 0; i < n; i++) {
+		const av = a[i] ?? 0
+		const bv = b[i] ?? 0
+		dot += av * bv
+		aa += av * av
+		bb += bv * bv
+	}
+	if (aa <= EPS || bb <= EPS) return 0
+	return clamp(dot / Math.sqrt(aa * bb))
+}
+
 /** Build long-range affinity fingerprints. Near neighbours are excluded so this encodes recurrence, not mere continuity. */
 export function recurrenceProfiles(features: ReadonlyArray<Float32Array>, exclusion = 4): Float32Array[] {
 	const n = features.length
@@ -78,7 +96,7 @@ export function recurrenceProfiles(features: ReadonlyArray<Float32Array>, exclus
 	const out = Array.from({length: n}, () => new Float32Array(n))
 	for (let i = 0; i < n; i++) {
 		for (let j = i + exclusion + 1; j < n; j++) {
-			const similarity = Math.max(0, 1 - cosineDistance(features[i]!, features[j]!))
+			const similarity = recurrenceSimilarity(features[i]!, features[j]!)
 			// Ignore weak accidental matches; square strong ones so recurring sections
 			// carry more weight than generic spectral similarity.
 			const value = similarity > 0.55 ? similarity * similarity : 0
