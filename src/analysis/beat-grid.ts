@@ -1,40 +1,13 @@
 import type {FeatureFrame, FeatureTimeline} from "../dsp/features.js"
 import {percentile} from "../math.js"
+import {tempoEvidence} from "./tempogram.js"
 export type RawBeat = {start: number; confidence: number; bpm: number}
 
-const EPS = 1e-12
 const HALF_TIME_WEAK_PARITY_RATIO = 0.25
 const HALF_TIME_MIN_STRONG_PARITY = 0.25
 
 function median(values: number[]): number {
 	return percentile(values, 0.5)
-}
-
-function normalizedEnvelope(frames: FeatureFrame[], pick: (frame: FeatureFrame) => number): Float64Array {
-	const values = frames.map((frame) => Math.log1p(Math.max(0, pick(frame))))
-	const floor = median(values)
-	const scale = Math.max(EPS, percentile(values, 0.99) - floor)
-	return Float64Array.from(values, (value) => Math.min(1.5, Math.max(0, value - floor) / scale))
-}
-
-function autocorrelation(envelope: Float64Array, lag: number): number {
-	if (lag < 1 || lag >= envelope.length) return 0
-	let dot = 0
-	let left = 0
-	let right = 0
-	for (let i = 0; i + lag < envelope.length; i++) {
-		const a = envelope[i]!
-		const b = envelope[i + lag]!
-		dot += a * b
-		left += a * a
-		right += b * b
-	}
-	return dot / Math.sqrt(Math.max(EPS, left * right))
-}
-
-function tempoPrior(bpm: number): number {
-	const logRatio = Math.log2(Math.max(EPS, bpm) / 120)
-	return Math.exp(-0.5 * (logRatio / 0.8) ** 2)
 }
 
 function frameIndexAt(timeline: FeatureTimeline, time: number): number {
@@ -53,7 +26,6 @@ function tempoRuns(beats: RawBeat[]): RawBeat[][] {
 		if (changed && i + 2 < beats.length) {
 			const following = [beats[i + 1]!.start - beats[i]!.start, beats[i + 2]!.start - beats[i + 1]!.start]
 			if (following.every((value) => Math.abs(value / interval - 1) < 0.15)) {
-				// The beat preceding the first new interval belongs to the new run.
 				const boundary = i - 1
 				if (boundary > start) runs.push(beats.slice(start, boundary))
 				start = boundary
@@ -99,12 +71,9 @@ function resolveRun(beats: RawBeat[], timeline: FeatureTimeline): RawBeat[] {
 	if (!beats.length) return []
 	const intervals = beats.slice(1).map((beat, i) => beat.start - beats[i]!.start)
 	const fallbackPeriod = median(intervals)
-	// Estimate the underlying period before filtering. Missing events or a phase
-	// switch must not turn a long output gap into an artificial tempo slowdown.
 	const periods = beats.map((beat, i) => median(intervals.slice(Math.max(0, i - 2), Math.min(intervals.length, i + 3))) || fallbackPeriod || (beat.bpm > 0 ? 60 / beat.bpm : 0))
 	const ticks = [0]
 	for (let i = 1; i < beats.length; i++) {
-		// Preserve metrical parity across missing raw events without inventing beats.
 		const steps = Math.max(1, Math.round(intervals[i - 1]! / periods[i]!))
 		ticks.push(ticks[i - 1]! + steps)
 	}
@@ -117,32 +86,19 @@ function resolveRun(beats: RawBeat[], timeline: FeatureTimeline): RawBeat[] {
 	for (let i = 0; i < beats.length; i++) {
 		const bpm = periods[i]! > 0 ? 60 / periods[i]! : beats[i]!.bpm
 		if (beats.length >= 8 && bpm >= 130) {
-			// Reuse each spectral decision for four beats. Normalize each envelope
-			// once for both candidate periods, rather than four times on every beat.
 			if (i % 4 === 0) {
 				const first = Math.max(0, Math.min(i - 8, beats.length - 17))
 				const last = Math.min(beats.length - 1, first + 16)
 				const from = frameIndexAt(timeline, beats[first]!.start - periods[i]! / 2)
 				const to = frameIndexAt(timeline, beats[last]!.start + periods[i]! / 2)
-				const frames = timeline.frames.slice(from, to)
-				const full = normalizedEnvelope(frames, (frame) => frame.onsetStrength)
-				const bass = normalizedEnvelope(frames, (frame) => frame.lowOnsetStrength)
-				const score = (tempo: number) => {
-					const lag = Math.round(timeline.sampleRate / timeline.hopSize * 60 / tempo)
-					return (autocorrelation(full, lag) * 0.72 + autocorrelation(bass, lag) * 0.28) * tempoPrior(tempo)
-				}
-				fullScore = score(bpm)
-				halfScore = score(bpm / 2)
+				fullScore = tempoEvidence(timeline, from, to, bpm)
+				halfScore = tempoEvidence(timeline, from, to, bpm / 2)
 			}
 			const evidence = parityEvidence(strengths, ticks, i)
-			const spectralHalfTime: boolean = halfScore > fullScore * (halfTime ? 1 : 1.08)
-			// A strong alternating accent is not enough to call a fast grid double-time.
-			// Only halve when one parity is locally close to unsupported as well.
-			const nextHalfTime: boolean = spectralHalfTime && supportsHalfTime(evidence)
+			const spectralHalfTime = halfScore > fullScore * (halfTime ? 1 : 1.08)
+			const nextHalfTime = spectralHalfTime && supportsHalfTime(evidence)
 			if (nextHalfTime) {
 				const preferred = evidence[1]! > evidence[0]! ? 1 : 0
-				// Reconsider phase when several nearby attacks favour the other one.
-				// A margin retains continuity through ambiguous/equal accents.
 				if (!halfTime || evidence[preferred]! > evidence[parity]! * 1.5) parity = preferred
 			}
 			halfTime = nextHalfTime
