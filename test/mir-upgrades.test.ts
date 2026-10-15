@@ -6,6 +6,7 @@ import {hpssMask} from "../src/dsp/hpss.js"
 import {extractFeatureTimeline, type FeatureFrame, type FeatureTimeline} from "../src/dsp/features.js"
 import {keyEvidence} from "../src/analysis/keys.js"
 import {tempoEvidence} from "../src/analysis/tempogram.js"
+import {selectSalientBeats} from "../src/analysis/beat-salience.js"
 import {recurrenceBoundaryNovelty, recurrenceProfiles} from "../src/analysis/sections.js"
 
 function triad(rootMidi: number, seconds: number, detuneSemitones = 0, sampleRate = 44100): Float32Array {
@@ -101,6 +102,21 @@ test("local tempogram prefers the actual pulse period over its double-time octav
 	const eighty = tempoEvidence(timeline, 0, frames.length, 80)
 	const oneSixty = tempoEvidence(timeline, 0, frames.length, 160)
 	assert.ok(eighty > oneSixty * 1.15, `80=${eighty}, 160=${oneSixty}`)
+})
+
+test("fast beat salience does not borrow support from a nearby subdivision", () => {
+	const sampleRate = 1000
+	const hopSize = 10
+	const hopSeconds = hopSize / sampleRate
+	const makeTimeline = (attackTime: number): FeatureTimeline => {
+		const frames = Array.from({length: 200}, (_, i) => emptyFrame(i, hopSeconds))
+		const attackIndex = Math.round(attackTime / hopSeconds)
+		frames[attackIndex]!.onsetStrength = 8
+		return {sampleRate, hopSize, frameSize: 20, duration: 2, frames}
+	}
+	const beat = {start: 1, confidence: 0.8, bpm: 174}
+	assert.equal(selectSalientBeats([beat], makeTimeline(1.05)).length, 0)
+	assert.equal(selectSalientBeats([beat], makeTimeline(1.03)).length, 1)
 })
 
 test("recurrence fingerprints distinguish repeated A/B form across a boundary", () => {
