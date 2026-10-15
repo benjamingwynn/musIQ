@@ -19,7 +19,7 @@ export type FeatureFrame = {
 	onsetStrength: number
 	/** Low-frequency component of onsetStrength (< 250 Hz). */
 	lowOnsetStrength: number
-	/** Harmonic-weighted, continuously interpolated pitch-class energy. */
+	/** Harmonic-weighted pitch-class energy from interpolated spectral peaks. */
 	chroma: Float32Array
 	bands: Float32Array
 }
@@ -49,9 +49,6 @@ function aWeightingDb(f: number): number {
 
 function addPitchClass(chroma: Float32Array, frequency: number, power: number): void {
 	if (frequency < 40 || frequency > 5000 || power <= 0) return
-	// Interpolate on the equal-tempered log-pitch axis instead of hard-rounding
-	// FFT bins to MIDI notes. This behaves like a very cheap constant-Q-spaced
-	// pitch filterbank while retaining the existing STFT front end.
 	const midi = 69 + 12 * Math.log2(frequency / 440)
 	const lower = Math.floor(midi)
 	const fraction = midi - lower
@@ -59,6 +56,20 @@ function addPitchClass(chroma: Float32Array, frequency: number, power: number): 
 	const upperPc = (((lower + 1) % 12) + 12) % 12
 	chroma[lowerPc] = (chroma[lowerPc] ?? 0) + power * (1 - fraction)
 	chroma[upperPc] = (chroma[upperPc] ?? 0) + power * fraction
+}
+
+/**
+ * Refine a local FFT maximum to sub-bin precision with a parabola in log power.
+ * This is far cheaper than a separate CQT, but avoids letting the coarse linear
+ * FFT grid decide the apparent pitch of a slightly detuned musical partial.
+ */
+function interpolatedPeakFrequency(spectrum: Float32Array, bin: number, sampleRate: number, frameSize: number): number {
+	const left = Math.log(Math.max(1e-20, spectrum[bin - 1] ?? 0))
+	const center = Math.log(Math.max(1e-20, spectrum[bin] ?? 0))
+	const right = Math.log(Math.max(1e-20, spectrum[bin + 1] ?? 0))
+	const denominator = left - 2 * center + right
+	const offset = Math.abs(denominator) > 1e-12 ? clamp(0.5 * (left - right) / denominator, -0.5, 0.5) : 0
+	return ((bin + offset) * sampleRate) / frameSize
 }
 
 function logBandIndex(frequency: number, count: number): number {
@@ -180,9 +191,7 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 			const power = spectrum[bin] ?? 0
 			const frequency = (bin * sampleRate) / frameSize
 			const band = logBandIndex(frequency, bandCount)
-			const harmonicWeight = 0.12 + 0.88 * (masks.harmonic[band] ?? 0.5)
 			const percussiveWeight = 0.12 + 0.88 * (masks.percussive[band] ?? 0.5)
-			const harmonicPower = power * harmonicWeight
 			const percussivePower = power * percussiveWeight
 			percussiveSpectrum[bin] = percussivePower
 
@@ -191,7 +200,6 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 			else if (frequency < 2000) mid += power
 			else high += power
 			weightedPower += power * 10 ** (aWeightingDb(frequency) / 10)
-			addPitchClass(chroma, frequency, harmonicPower)
 			addOnsetMagnitude(onsetBands, frequency, Math.sqrt(Math.max(0, percussivePower)))
 
 			if (previousPercussiveSpectrum) {
@@ -203,6 +211,23 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 					else highFlux += diff
 				}
 			}
+		}
+
+		// Chroma is intentionally peak-based. Summing every linear FFT bin lets
+		// spectral leakage and the ~21.5 Hz bin spacing at 44.1 kHz bias a detuned
+		// note toward the wrong pitch class. Local peak interpolation recovers the
+		// actual partial frequency cheaply and is much closer to how HPCP features
+		// are normally built.
+		const chromaFloor = totalPower * 1e-7
+		for (let bin = 2; bin + 2 < spectrum.length; bin++) {
+			const power = spectrum[bin] ?? 0
+			if (power <= chromaFloor || power < (spectrum[bin - 1] ?? 0) || power <= (spectrum[bin + 1] ?? 0)) continue
+			const frequency = interpolatedPeakFrequency(spectrum, bin, sampleRate, frameSize)
+			if (frequency < 40 || frequency > 5000) continue
+			const band = logBandIndex(frequency, bandCount)
+			const harmonicWeight = 0.12 + 0.88 * (masks.harmonic[band] ?? 0.5)
+			const localPower = (spectrum[bin - 1] ?? 0) + power + (spectrum[bin + 1] ?? 0)
+			addPitchClass(chroma, frequency, localPower * harmonicWeight)
 		}
 
 		let chromaTotal = 0
