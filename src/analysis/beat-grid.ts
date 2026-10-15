@@ -95,8 +95,8 @@ function resolveRun(beats: RawBeat[], timeline: FeatureTimeline): RawBeat[] {
 				halfScore = tempoEvidence(timeline, from, to, bpm / 2)
 			}
 			const evidence = parityEvidence(strengths, ticks, i)
-			const spectralHalfTime = halfScore > fullScore * (halfTime ? 1 : 1.08)
-			const nextHalfTime = spectralHalfTime && supportsHalfTime(evidence)
+			const spectralHalfTime: boolean = halfScore > fullScore * (halfTime ? 1 : 1.08)
+			const nextHalfTime: boolean = spectralHalfTime && supportsHalfTime(evidence)
 			if (nextHalfTime) {
 				const preferred = evidence[1]! > evidence[0]! ? 1 : 0
 				if (!halfTime || evidence[preferred]! > evidence[parity]! * 1.5) parity = preferred
