@@ -72,14 +72,6 @@ const ONSET_BAND_COUNT = Math.ceil(Math.log2(ONSET_MAX_HZ / ONSET_MIN_HZ) * ONSE
 
 function addOnsetMagnitude(bands: Float32Array, frequency: number, magnitude: number): void {
 	if (frequency < ONSET_MIN_HZ || frequency > ONSET_MAX_HZ || magnitude <= 0) return
-
-	// Interpolate each FFT bin between neighbouring quarter-tone centres instead
-	// of hard-bucketing it. Hard bucket edges turn a slowly moving harmonic into
-	// an artificial disappearance/appearance pair -- exactly the false-onset
-	// failure this representation exists to avoid. This is a cheap triangular
-	// log-frequency filterbank: wider high-frequency bands naturally collect
-	// more linear FFT bins, matching the unnormalised filterbank used by
-	// SuperFlux rather than equalising every band's area.
 	const position = Math.log2(frequency / ONSET_MIN_HZ) * ONSET_BANDS_PER_OCTAVE - 0.5
 	const lower = Math.floor(position)
 	const fraction = position - lower
@@ -92,11 +84,6 @@ function onsetBandCenter(index: number): number {
 	return ONSET_MIN_HZ * 2 ** ((index + 0.5) / ONSET_BANDS_PER_OCTAVE)
 }
 
-/**
- * SuperFlux-style positive difference against a maximum-filtered earlier
- * log-frequency spectrum. The +/- one-band max follows local pitch motion
- * instead of interpreting vibrato as repeated note attacks.
- */
 function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: number; low: number} {
 	let full = 0
 	let low = 0
@@ -109,11 +96,22 @@ function trajectoryFlux(current: Float32Array, previous: Float32Array): {full: n
 		full += diff
 		if (onsetBandCenter(i) < 250) low += diff
 	}
-
 	return {full, low}
 }
 
-export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, options: ExtractFeatureOptions = {}): FeatureTimeline {
+function channelsOf(input: Float32Array | ReadonlyArray<Float32Array>): ReadonlyArray<Float32Array> {
+	return input instanceof Float32Array ? [input] : input
+}
+
+function sampleLength(channels: ReadonlyArray<Float32Array>): number {
+	let length = 0
+	for (const channel of channels) length = Math.max(length, channel.length)
+	return length
+}
+
+/** Phase-safe low-level feature extraction for mono or multichannel audio. */
+export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float32Array>, sampleRate: number, options: ExtractFeatureOptions = {}): FeatureTimeline {
+	const channels = channelsOf(input)
 	const frameSize = options.frameSize ?? 2048
 	const hopSize = options.hopSize ?? 512
 	const bandCount = options.bandCount ?? SPECTRUM_BAND_COUNT
@@ -123,24 +121,32 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 	const window = hann(frameSize)
 	const frames: FeatureFrame[] = []
 	let previousSpectrum: Float32Array | null = null
-	// Retain the preceding log-frequency spectra for the onset comparison.
 	const onsetHistory: Float32Array[] = []
-	const duration = mono.length / sampleRate
+	const length = sampleLength(channels)
+	const duration = length / sampleRate
+	const channelCount = channels.length
 
-	for (let offset = 0; offset < mono.length; offset += hopSize) {
-		const samples = new Float32Array(frameSize)
-		samples.set(mono.subarray(offset, Math.min(offset + frameSize, mono.length)))
-
+	for (let offset = 0; offset < length; offset += hopSize) {
+		const spectrum = new Float32Array(frameSize >> 1)
 		let sumSquares = 0
 		let crossings = 0
-		for (let i = 0; i < frameSize; i++) {
-			const x = samples[i] ?? 0
-			sumSquares += x * x
-			if (i > 0 && x >= 0 !== (samples[i - 1] ?? 0) >= 0) crossings++
+
+		for (const channel of channels) {
+			const samples = new Float32Array(frameSize)
+			samples.set(channel.subarray(offset, Math.min(offset + frameSize, channel.length)))
+			for (let i = 0; i < frameSize; i++) {
+				const x = samples[i] ?? 0
+				sumSquares += x * x
+				if (i > 0 && x >= 0 !== (samples[i - 1] ?? 0) >= 0) crossings++
+			}
+			const channelSpectrum = powerSpectrum(samples, frameSize, window)
+			for (let bin = 0; bin < spectrum.length; bin++) spectrum[bin] = (spectrum[bin] ?? 0) + (channelSpectrum[bin] ?? 0)
 		}
-		const rms = Math.sqrt(sumSquares / frameSize)
-		const zcr = crossings / Math.max(1, frameSize - 1)
-		const spectrum = powerSpectrum(samples, frameSize, window)
+
+		const invChannels = channelCount > 0 ? 1 / channelCount : 0
+		for (let bin = 0; bin < spectrum.length; bin++) spectrum[bin] = (spectrum[bin] ?? 0) * invChannels
+		const rms = Math.sqrt((sumSquares * invChannels) / frameSize)
+		const zcr = (crossings * invChannels) / Math.max(1, frameSize - 1)
 
 		let totalPower = 0
 		let low = 0
@@ -162,21 +168,11 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 			if (frequency < 250) low += power
 			else if (frequency < 2000) mid += power
 			else high += power
-
-			const weight = 10 ** (aWeightingDb(frequency) / 10)
-			weightedPower += power * weight
-
+			weightedPower += power * 10 ** (aWeightingDb(frequency) / 10)
 			const chromaIndex = hzToChroma(frequency)
 			if (chromaIndex !== null) chroma[chromaIndex] = (chroma[chromaIndex] ?? 0) + power
-			{
-				const band = logBandIndex(frequency, bandCount)
-				bands[band] = (bands[band] ?? 0) + power
-			}
-
-			// Work in magnitude rather than power; logarithmic compression is done
-			// after summing into the quarter-tone filterbank.
+			bands[logBandIndex(frequency, bandCount)] = (bands[logBandIndex(frequency, bandCount)] ?? 0) + power
 			addOnsetMagnitude(onsetBands, frequency, Math.sqrt(Math.max(0, power)))
-
 			if (previousSpectrum) {
 				const diff = power - (previousSpectrum[bin] ?? 0)
 				if (diff > 0) {
@@ -191,44 +187,16 @@ export function extractFeatureTimeline(mono: Float32Array, sampleRate: number, o
 		const invTotal = totalPower > 0 ? 1 / totalPower : 0
 		for (let i = 0; i < 12; i++) chroma[i] = (chroma[i] ?? 0) * invTotal
 		for (let i = 0; i < bandCount; i++) bands[i] = Math.log1p((bands[i] ?? 0) * 1e6)
-		// Log compression makes the onset detector care about relative spectral
-		// change instead of letting one huge partial dominate the whole function.
 		for (let i = 0; i < onsetBands.length; i++) onsetBands[i] = Math.log1p((onsetBands[i] ?? 0) * 2048)
-
-		// SuperFlux's common setup compares spectra roughly 10 ms apart. With our
-		// 512-sample hop that is one frame at 44.1/48 kHz; using a fixed two-frame
-		// lag (~21-23 ms) lets a sustained vibrato/glissando travel too far for the
-		// local maximum filter and turns pitch motion into fake attacks.
 		const targetLagFrames = Math.max(1, Math.round((0.01 * sampleRate) / hopSize))
 		const comparison = onsetHistory.length >= targetLagFrames ? onsetHistory[onsetHistory.length - targetLagFrames] : null
 		const robustFlux = comparison ? trajectoryFlux(onsetBands, comparison) : {full: 0, low: 0}
 		onsetHistory.push(onsetBands)
 		if (onsetHistory.length > Math.max(3, targetLagFrames + 1)) onsetHistory.shift()
-
-		const weightedRms = Math.sqrt(Math.max(weightedPower, 1e-20))
-		const loudnessDb = 20 * Math.log10(weightedRms)
-		// Kept only as a structural feature for the section baseline. Public
-		// perceived/true loudness is computed separately in dsp/loudness.ts.
+		const loudnessDb = 20 * Math.log10(Math.sqrt(Math.max(weightedPower, 1e-20)))
 		const loudness = clamp((loudnessDb + 70) / 64)
 
-		frames.push({
-			start: offset / sampleRate,
-			center: (offset + frameSize / 2) / sampleRate,
-			rms,
-			zcr,
-			lowEnergy: low * invTotal,
-			midEnergy: mid * invTotal,
-			highEnergy: high * invTotal,
-			loudness,
-			spectralFlux: Math.sqrt(flux),
-			lowFlux: Math.sqrt(lowFlux),
-			midFlux: Math.sqrt(midFlux),
-			highFlux: Math.sqrt(highFlux),
-			onsetStrength: robustFlux.full,
-			lowOnsetStrength: robustFlux.low,
-			chroma,
-			bands,
-		})
+		frames.push({start: offset / sampleRate, center: (offset + frameSize / 2) / sampleRate, rms, zcr, lowEnergy: low * invTotal, midEnergy: mid * invTotal, highEnergy: high * invTotal, loudness, spectralFlux: Math.sqrt(flux), lowFlux: Math.sqrt(lowFlux), midFlux: Math.sqrt(midFlux), highFlux: Math.sqrt(highFlux), onsetStrength: robustFlux.full, lowOnsetStrength: robustFlux.low, chroma, bands})
 		previousSpectrum = spectrum
 	}
 
