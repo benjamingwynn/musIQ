@@ -61,7 +61,7 @@ test("percussive clicks do not knock harmonic C-major evidence off C major", () 
 	assert.ok(mixedKeys[0]! >= mixedKeys[1]!, `C=${mixedKeys[0]} C#=${mixedKeys[1]}`)
 })
 
-test("log-pitch interpolation keeps a moderately detuned C-major triad tonally coherent", () => {
+test("spectral peak interpolation keeps a moderately detuned C-major triad tonally coherent", () => {
 	const keys = keyEvidence(extractFeatureTimeline(triad(60, 4, 0.42), 44100).frames)
 	assert.equal(bestKey(keys), 0)
 })
@@ -110,6 +110,15 @@ test("recurrence fingerprints distinguish repeated A/B form across a boundary", 
 	const profiles = recurrenceProfiles(features, 1)
 	const novelty = recurrenceBoundaryNovelty(profiles, 2, 2)
 	assert.ok(novelty > 0.5, `novelty=${novelty}`)
+})
+
+test("silent structural units are not recurrence matches for arbitrary music", () => {
+	const silence = new Float32Array([0, 0, 0, 0])
+	const A = new Float32Array([1, 0, 0, 0])
+	const profiles = recurrenceProfiles([silence, A, A], 0)
+	assert.equal(profiles[0]?.[1], 0)
+	assert.equal(profiles[0]?.[2], 0)
+	assert.ok((profiles[1]?.[2] ?? 0) > 0.9)
 })
 
 test("recurrence analysis is deliberately bounded for very long unit sequences", () => {
