@@ -1,5 +1,6 @@
 import {extractFeatureTimeline} from "../dsp/features.js"
 import {extractLoudnessTimeline} from "../dsp/loudness.js"
+import {mixForBeatTracking} from "../dsp/mix.js"
 import {makeSegments, segmentAt} from "./segments.js"
 import {detectRawBeats} from "./beats-core.js"
 import {resolveBeatGrid} from "./beat-grid.js"
@@ -16,28 +17,17 @@ export type DecodedForAnalysis = {
 	duration: number
 }
 
-function mixToMono(channels: ReadonlyArray<Float32Array>): Float32Array {
-	if (channels.length === 0) return new Float32Array()
-	if (channels.length === 1) return channels[0]?.slice() ?? new Float32Array()
-
-	let length = 0
-	for (const channel of channels) length = Math.max(length, channel.length)
-	const mono = new Float32Array(length)
-	const gain = 1 / channels.length
-	for (const channel of channels) {
-		for (let i = 0; i < channel.length; i++) mono[i] = (mono[i] ?? 0) + (channel[i] ?? 0) * gain
-	}
-	return mono
-}
-
 /** Entire CPU-heavy musIQ pipeline. This function is deliberately worker-safe. */
 export async function analyseDecoded(decoded: DecodedForAnalysis): Promise<Analysis> {
-	const mono = mixToMono(decoded.channels)
-	const timeline = extractFeatureTimeline(mono, decoded.sampleRate)
+	// Timbre/harmony/onset features pool channel powers directly so stereo phase
+	// cannot cancel them. Aubio still needs one waveform, for which we retain the
+	// ordinary downmix unless it exhibits severe cancellation.
+	const timeline = extractFeatureTimeline(decoded.channels, decoded.sampleRate)
+	const beatSignal = mixForBeatTracking(decoded.channels)
 	const loudness = extractLoudnessTimeline(decoded.channels, decoded.sampleRate, decoded.duration, 10)
 	const segments = makeSegments(timeline, loudness, 10)
 
-	const aubioBeats = await detectRawBeats(decoded.sampleRate, mono)
+	const aubioBeats = await detectRawBeats(decoded.sampleRate, beatSignal)
 	// Keep the metrical grid internally even when a sustained passage has no
 	// acoustically salient attacks. Public beats[] is intentionally sparser: it
 	// should drive visuals when something is actually perceived to hit.
