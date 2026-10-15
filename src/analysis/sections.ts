@@ -6,6 +6,20 @@ const CHROMA_DIMS = 12
 const BAND_DIMS = 8
 const DIMS = CHROMA_DIMS + BAND_DIMS + 2
 
+function pooledBand(frame: FeatureFrame, group: number): number {
+	const sourceCount = frame.bands.length
+	if (!sourceCount) return 0
+	const start = Math.floor((group * sourceCount) / BAND_DIMS)
+	const end = Math.max(start + 1, Math.floor(((group + 1) * sourceCount) / BAND_DIMS))
+	let sum = 0
+	let count = 0
+	for (let i = start; i < Math.min(end, sourceCount); i++) {
+		sum += frame.bands[i] ?? 0
+		count++
+	}
+	return count ? sum / count : 0
+}
+
 function intervalFeature(frames: FeatureFrame[]): Float32Array {
 	const vector = new Float32Array(DIMS)
 	if (frames.length === 0) return vector
@@ -13,7 +27,7 @@ function intervalFeature(frames: FeatureFrame[]): Float32Array {
 		for (let i = 0; i < CHROMA_DIMS; i++) vector[i] = (vector[i] ?? 0) + (frame.chroma[i] ?? 0)
 		for (let i = 0; i < BAND_DIMS; i++) {
 			const at = CHROMA_DIMS + i
-			vector[at] = (vector[at] ?? 0) + (frame.bands[i] ?? 0)
+			vector[at] = (vector[at] ?? 0) + pooledBand(frame, i)
 		}
 		vector[CHROMA_DIMS + BAND_DIMS] = (vector[CHROMA_DIMS + BAND_DIMS] ?? 0) + frame.loudness
 		vector[CHROMA_DIMS + BAND_DIMS + 1] = (vector[CHROMA_DIMS + BAND_DIMS + 1] ?? 0) + Math.log1p(frame.spectralFlux * 1e4)
