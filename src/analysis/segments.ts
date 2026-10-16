@@ -11,6 +11,18 @@ function mean(frames: FeatureFrame[], pick: (frame: FeatureFrame) => number): nu
 	return sum / frames.length
 }
 
+function meanChroma(frames: FeatureFrame[]): Float32Array {
+	const chroma = new Float32Array(12)
+	if (!frames.length) return chroma
+	for (const frame of frames) {
+		for (let i = 0; i < chroma.length; i++) chroma[i] = (chroma[i] ?? 0) + (frame.chroma[i] ?? 0)
+	}
+	let total = 0
+	for (const value of chroma) total += value
+	if (total > 0) for (let i = 0; i < chroma.length; i++) chroma[i] = (chroma[i] ?? 0) / total
+	return chroma
+}
+
 function meanSpectrum(frames: FeatureFrame[]): Float32Array {
 	const spectrum = new Float32Array(SPECTRUM_BAND_COUNT)
 	if (!frames.length) return spectrum
@@ -57,6 +69,7 @@ export function makeSegments(timeline: FeatureTimeline, loudness: LoudnessTimeli
 			midEnergy: mean(frames, (f) => f.midEnergy),
 			highEnergy: mean(frames, (f) => f.highEnergy),
 			zeroCrossingRate: mean(frames, (f) => f.zcr),
+			chroma: meanChroma(frames),
 			spectrum: meanSpectrum(frames),
 			perceivedLoudness: loudnessPoint?.perceivedLoudness ?? 0,
 			trueLoudness: loudnessPoint?.trueLoudness ?? -120,
