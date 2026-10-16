@@ -21,9 +21,12 @@ test("shared feature timeline produces finite truthful segment fields", () => {
 	const segments = makeSegments(timeline, loudness)
 	assert.ok(segments.length >= 19 && segments.length <= 21)
 	for (const segment of segments) {
-		const {spectrum, ...scalarFields} = segment
+		const {spectrum, chroma, ...scalarFields} = segment
 		for (const value of Object.values(scalarFields)) assert.equal(Number.isFinite(value), true)
 		for (const value of spectrum) assert.ok(Number.isFinite(value) && value >= 0 && value <= 1)
+		for (const value of chroma) assert.ok(Number.isFinite(value) && value >= 0 && value <= 1)
+		const chromaSum = Array.from(chroma).reduce((sum, value) => sum + value, 0)
+		assert.ok(chromaSum === 0 || Math.abs(chromaSum - 1) < 1e-5)
 		const bandSum = segment.lowEnergy + segment.midEnergy + segment.highEnergy
 		assert.ok(Math.abs(bandSum - 1) < 0.05)
 		assert.ok(segment.perceivedLoudness >= 0 && segment.perceivedLoudness <= 1)
@@ -160,8 +163,6 @@ function droneWithPulses(seconds: number, bpm: number, pulses: boolean, sampleRa
 	const data = new Float32Array(Math.round(seconds * sampleRate))
 	for (let i = 0; i < data.length; i++) {
 		const t = i / sampleRate
-		// Continuous pitched bed: exactly the sort of material that should not
-		// manufacture beat events merely because a metrical grid exists.
 		data[i] = 0.2 * Math.sin(2 * Math.PI * 220 * t)
 	}
 	if (!pulses) return data
@@ -319,7 +320,6 @@ function assertPassageGrids(passages: {bpm: number; halfTime: boolean}[]): void 
 	const {timeline, beats} = passageTimeline(passages)
 	const resolved = resolveBeatGrid(beats, timeline)
 	for (let p = 0; p < passages.length; p++) {
-		// Leave the local evidence window around a transition unconstrained.
 		const interior = beats.slice(p * 48 + 12, (p + 1) * 48 - 12)
 		const kept = resolved.filter((beat) => beat.start >= interior[0]!.start && beat.start <= interior[interior.length - 1]!.start)
 		const expectedCount = interior.length / (passages[p]!.halfTime ? 2 : 1)
@@ -342,7 +342,6 @@ test("half-time phase follows a sustained accent change", () => {
 	const {timeline, beats} = passageTimeline([{bpm: 160, halfTime: true}, {bpm: 160, halfTime: true}])
 	for (let i = 48; i < beats.length; i++) addOnset(timeline, beats[i]!.start, i % 2 === 1 ? 10 : 0.1)
 	const resolved = resolveBeatGrid(beats, timeline)
-	// Require the new phase within four input beats, including the rest of the track.
 	const later = resolved.filter((beat) => beat.start >= beats[52]!.start)
 	assert.ok(later.length >= 20)
 	for (const beat of later) {
