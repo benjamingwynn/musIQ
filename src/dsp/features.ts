@@ -1,4 +1,5 @@
 import {hann, powerSpectrum} from "./fft.js"
+import {hpssMask} from "./hpss.js"
 import {clamp} from "../math.js"
 
 export type FeatureFrame = {
@@ -14,14 +15,11 @@ export type FeatureFrame = {
 	lowFlux: number
 	midFlux: number
 	highFlux: number
-	/**
-	 * SuperFlux-inspired onset evidence. Unlike ordinary spectral flux this
-	 * tolerates small pitch trajectories, so vibrato / drifting sustained notes
-	 * do not look like a sequence of fresh attacks.
-	 */
+	/** SuperFlux-inspired onset evidence. */
 	onsetStrength: number
 	/** Low-frequency component of onsetStrength (< 250 Hz). */
 	lowOnsetStrength: number
+	/** Harmonic-weighted pitch-class energy from interpolated spectral peaks. */
 	chroma: Float32Array
 	bands: Float32Array
 }
@@ -49,11 +47,29 @@ function aWeightingDb(f: number): number {
 	return 20 * Math.log10(Math.max(ra, 1e-12)) + 2
 }
 
-function hzToChroma(frequency: number): number | null {
-	if (frequency < 40 || frequency > 5000) return null
+function addPitchClass(chroma: Float32Array, frequency: number, power: number): void {
+	if (frequency < 40 || frequency > 5000 || power <= 0) return
 	const midi = 69 + 12 * Math.log2(frequency / 440)
-	const rounded = Math.round(midi)
-	return ((rounded % 12) + 12) % 12
+	const lower = Math.floor(midi)
+	const fraction = midi - lower
+	const lowerPc = ((lower % 12) + 12) % 12
+	const upperPc = (((lower + 1) % 12) + 12) % 12
+	chroma[lowerPc] = (chroma[lowerPc] ?? 0) + power * (1 - fraction)
+	chroma[upperPc] = (chroma[upperPc] ?? 0) + power * fraction
+}
+
+/**
+ * Refine a local FFT maximum to sub-bin precision with a parabola in log power.
+ * This is far cheaper than a separate CQT, but avoids letting the coarse linear
+ * FFT grid decide the apparent pitch of a slightly detuned musical partial.
+ */
+function interpolatedPeakFrequency(spectrum: Float32Array, bin: number, sampleRate: number, frameSize: number): number {
+	const left = Math.log(Math.max(1e-20, spectrum[bin - 1] ?? 0))
+	const center = Math.log(Math.max(1e-20, spectrum[bin] ?? 0))
+	const right = Math.log(Math.max(1e-20, spectrum[bin + 1] ?? 0))
+	const denominator = left - 2 * center + right
+	const offset = Math.abs(denominator) > 1e-12 ? clamp(0.5 * (left - right) / denominator, -0.5, 0.5) : 0
+	return ((bin + offset) * sampleRate) / frameSize
 }
 
 function logBandIndex(frequency: number, count: number): number {
@@ -67,7 +83,7 @@ function logBandIndex(frequency: number, count: number): number {
 
 const ONSET_MIN_HZ = 30
 const ONSET_MAX_HZ = 16000
-const ONSET_BANDS_PER_OCTAVE = 24 // quarter-tone spacing, as in SuperFlux
+const ONSET_BANDS_PER_OCTAVE = 24
 const ONSET_BAND_COUNT = Math.ceil(Math.log2(ONSET_MAX_HZ / ONSET_MIN_HZ) * ONSET_BANDS_PER_OCTAVE) + 1
 
 function addOnsetMagnitude(bands: Float32Array, frequency: number, magnitude: number): void {
@@ -122,6 +138,7 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 	const frames: FeatureFrame[] = []
 	let previousSpectrum: Float32Array | null = null
 	const onsetHistory: Float32Array[] = []
+	const hpssHistory: Float32Array[] = []
 	const length = sampleLength(channels)
 	const duration = length / sampleRate
 	const channelCount = channels.length
@@ -130,7 +147,6 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		const spectrum = new Float32Array(frameSize >> 1)
 		let sumSquares = 0
 		let crossings = 0
-
 		for (const channel of channels) {
 			const samples = new Float32Array(frameSize)
 			samples.set(channel.subarray(offset, Math.min(offset + frameSize, channel.length)))
@@ -142,11 +158,22 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 			const channelSpectrum = powerSpectrum(samples, frameSize, window)
 			for (let bin = 0; bin < spectrum.length; bin++) spectrum[bin] = (spectrum[bin] ?? 0) + (channelSpectrum[bin] ?? 0)
 		}
-
 		const invChannels = channelCount > 0 ? 1 / channelCount : 0
 		for (let bin = 0; bin < spectrum.length; bin++) spectrum[bin] = (spectrum[bin] ?? 0) * invChannels
 		const rms = Math.sqrt((sumSquares * invChannels) / frameSize)
 		const zcr = (crossings * invChannels) / Math.max(1, frameSize - 1)
+
+		// HPSS is deliberately restricted to tonal evidence. Beat/onset features
+		// stay on the raw spectrum so time-varying masks cannot manufacture attacks.
+		const rawBands = new Float32Array(bandCount)
+		for (let bin = 1; bin < spectrum.length; bin++) {
+			const frequency = (bin * sampleRate) / frameSize
+			const band = logBandIndex(frequency, bandCount)
+			rawBands[band] = (rawBands[band] ?? 0) + (spectrum[bin] ?? 0)
+		}
+		const masks = hpssMask(rawBands, hpssHistory)
+		hpssHistory.push(rawBands)
+		if (hpssHistory.length > 8) hpssHistory.shift()
 
 		let totalPower = 0
 		let low = 0
@@ -158,21 +185,19 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		let midFlux = 0
 		let highFlux = 0
 		const chroma = new Float32Array(12)
-		const bands = new Float32Array(bandCount)
 		const onsetBands = new Float32Array(ONSET_BAND_COUNT)
 
 		for (let bin = 1; bin < spectrum.length; bin++) {
 			const power = spectrum[bin] ?? 0
 			const frequency = (bin * sampleRate) / frameSize
+
 			totalPower += power
 			if (frequency < 250) low += power
 			else if (frequency < 2000) mid += power
 			else high += power
 			weightedPower += power * 10 ** (aWeightingDb(frequency) / 10)
-			const chromaIndex = hzToChroma(frequency)
-			if (chromaIndex !== null) chroma[chromaIndex] = (chroma[chromaIndex] ?? 0) + power
-			bands[logBandIndex(frequency, bandCount)] = (bands[logBandIndex(frequency, bandCount)] ?? 0) + power
 			addOnsetMagnitude(onsetBands, frequency, Math.sqrt(Math.max(0, power)))
+
 			if (previousSpectrum) {
 				const diff = power - (previousSpectrum[bin] ?? 0)
 				if (diff > 0) {
@@ -184,18 +209,38 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 			}
 		}
 
-		const invTotal = totalPower > 0 ? 1 / totalPower : 0
-		for (let i = 0; i < 12; i++) chroma[i] = (chroma[i] ?? 0) * invTotal
-		for (let i = 0; i < bandCount; i++) bands[i] = Math.log1p((bands[i] ?? 0) * 1e6)
+		// Chroma is intentionally peak-based. Summing every linear FFT bin lets
+		// spectral leakage and the ~21.5 Hz bin spacing at 44.1 kHz bias a detuned
+		// note toward the wrong pitch class. Local peak interpolation recovers the
+		// actual partial frequency cheaply and is much closer to how HPCP features
+		// are normally built.
+		const chromaFloor = totalPower * 1e-7
+		for (let bin = 2; bin + 2 < spectrum.length; bin++) {
+			const power = spectrum[bin] ?? 0
+			if (power <= chromaFloor || power < (spectrum[bin - 1] ?? 0) || power <= (spectrum[bin + 1] ?? 0)) continue
+			const frequency = interpolatedPeakFrequency(spectrum, bin, sampleRate, frameSize)
+			if (frequency < 40 || frequency > 5000) continue
+			const band = logBandIndex(frequency, bandCount)
+			const harmonicWeight = 0.12 + 0.88 * (masks.harmonic[band] ?? 0.5)
+			const localPower = (spectrum[bin - 1] ?? 0) + power + (spectrum[bin + 1] ?? 0)
+			addPitchClass(chroma, frequency, localPower * harmonicWeight)
+		}
+
+		let chromaTotal = 0
+		for (const value of chroma) chromaTotal += value
+		if (chromaTotal > 0) for (let i = 0; i < chroma.length; i++) chroma[i] = (chroma[i] ?? 0) / chromaTotal
+		const bands = rawBands.slice()
+		for (let i = 0; i < bands.length; i++) bands[i] = Math.log1p((bands[i] ?? 0) * 1e6)
 		for (let i = 0; i < onsetBands.length; i++) onsetBands[i] = Math.log1p((onsetBands[i] ?? 0) * 2048)
 		const targetLagFrames = Math.max(1, Math.round((0.01 * sampleRate) / hopSize))
 		const comparison = onsetHistory.length >= targetLagFrames ? onsetHistory[onsetHistory.length - targetLagFrames] : null
 		const robustFlux = comparison ? trajectoryFlux(onsetBands, comparison) : {full: 0, low: 0}
 		onsetHistory.push(onsetBands)
 		if (onsetHistory.length > Math.max(3, targetLagFrames + 1)) onsetHistory.shift()
+
+		const invTotal = totalPower > 0 ? 1 / totalPower : 0
 		const loudnessDb = 20 * Math.log10(Math.sqrt(Math.max(weightedPower, 1e-20)))
 		const loudness = clamp((loudnessDb + 70) / 64)
-
 		frames.push({start: offset / sampleRate, center: (offset + frameSize / 2) / sampleRate, rms, zcr, lowEnergy: low * invTotal, midEnergy: mid * invTotal, highEnergy: high * invTotal, loudness, spectralFlux: Math.sqrt(flux), lowFlux: Math.sqrt(lowFlux), midFlux: Math.sqrt(midFlux), highFlux: Math.sqrt(highFlux), onsetStrength: robustFlux.full, lowOnsetStrength: robustFlux.low, chroma, bands})
 		previousSpectrum = spectrum
 	}
