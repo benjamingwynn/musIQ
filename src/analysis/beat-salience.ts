@@ -16,8 +16,8 @@ function framesAround(timeline: FeatureTimeline, time: number, seconds: number):
 }
 
 function localPeak(timeline: FeatureTimeline, time: number, pick: (frame: FeatureFrame) => number, tolerance: number): number {
-	// Beat timestamps and attack peaks need not coincide exactly. Keep this window
-	// caller-controlled so fast material cannot borrow evidence from subdivisions.
+	// Beat timestamps and attack peaks need not coincide exactly. SuperFlux-style
+	// onset evaluation commonly uses tens-of-ms peak windows; give the grid 70 ms.
 	let peak = 0
 	for (const frame of framesAround(timeline, time, tolerance)) {
 		if (Math.abs(frame.center - time) <= tolerance) peak = Math.max(peak, Math.max(0, pick(frame)))
@@ -48,14 +48,6 @@ function adaptiveSupport(timeline: FeatureTimeline, time: number, pick: (frame: 
 	return clamp(Math.sqrt(localContrast * globalContrast))
 }
 
-function beatTolerance(beat: RawBeat): number {
-	// At fast tempos a fixed ±70 ms window can reach most of the way to a nearby
-	// sixteenth-note attack. Scale with the beat period, but retain enough room for
-	// aubio/grid timing jitter at ordinary tempos.
-	const period = beat.bpm > 0 ? 60 / beat.bpm : 0.4
-	return Math.min(0.05, Math.max(0.025, period * 0.12))
-}
-
 export type OnsetEvidence = {
 	evidence: number
 	fullBandEvidence: number
@@ -79,7 +71,7 @@ export function createOnsetEvidence(timeline: FeatureTimeline): (time: number, t
 		)
 	)
 
-	return (time, tolerance = 0.05) => {
+	return (time, tolerance = 0.07) => {
 		const fullBandEvidence = adaptiveSupport(timeline, time, (frame) => frame.onsetStrength, fullGlobal, tolerance)
 		const bassEvidence = adaptiveSupport(timeline, time, (frame) => frame.lowOnsetStrength, bassGlobal, tolerance)
 		// Bass helps distinguish a kick-defined pulse from hats/subdivisions, but a
@@ -94,7 +86,7 @@ export type BeatSalience = OnsetEvidence & {beat: RawBeat}
 export function beatSalience(beats: RawBeat[], timeline: FeatureTimeline): BeatSalience[] {
 	if (!beats.length || !timeline.frames.length) return []
 	const evidenceAt = createOnsetEvidence(timeline)
-	return beats.map((beat) => ({beat, ...evidenceAt(beat.start, beatTolerance(beat))}))
+	return beats.map((beat) => ({beat, ...evidenceAt(beat.start)}))
 }
 
 /**
