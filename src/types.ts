@@ -30,6 +30,8 @@ export type DetectedSegment = {
 	midEnergy: number
 	highEnergy: number
 	zeroCrossingRate: number
+	/** Twelve pitch-class energies, ordered C..B and normalized to sum to 1 when tonal evidence is present. */
+	chroma: Float32Array
 	/** Twenty-four log-spaced spectrum bands spanning roughly 40 Hz to 16 kHz, low to high, normalized to 0..1 across the track. */
 	spectrum: Float32Array
 	perceivedLoudness: number
