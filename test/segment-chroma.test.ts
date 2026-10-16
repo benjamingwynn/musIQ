@@ -28,7 +28,9 @@ test("segments expose normalized 12-bin chroma", () => {
 	}
 
 	const average = new Float64Array(12)
-	for (const segment of segments) for (let i = 0; i < 12; i++) average[i] += segment.chroma[i] ?? 0
+	for (const segment of segments) {
+		for (let i = 0; i < 12; i++) average[i] = (average[i] ?? 0) + (segment.chroma[i] ?? 0)
+	}
 	let strongest = 0
 	for (let i = 1; i < average.length; i++) if (average[i]! > average[strongest]!) strongest = i
 	assert.equal(strongest, 9) // A
