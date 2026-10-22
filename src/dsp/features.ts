@@ -168,8 +168,15 @@ export function extractFeatureTimeline(input: Float32Array | ReadonlyArray<Float
 		const rawBands = new Float32Array(bandCount)
 		for (let bin = 1; bin < spectrum.length; bin++) {
 			const frequency = (bin * sampleRate) / frameSize
-			const band = logBandIndex(frequency, bandCount)
-			rawBands[band] = (rawBands[band] ?? 0) + (spectrum[bin] ?? 0)
+			const power = spectrum[bin] ?? 0
+			// Interpolate between log-band centres. Narrow bass bands can contain
+			// no FFT-bin centres at 2048 samples (e.g. band 2 at 44.1 kHz),
+			// so hard-bucketing would otherwise leave them permanently empty.
+			const position = clamp((Math.log(frequency / 40) / Math.log(16000 / 40)) * bandCount - 0.5, 0, bandCount - 1)
+			const lower = Math.floor(position)
+			const fraction = position - lower
+			rawBands[lower] = (rawBands[lower] ?? 0) + power * (1 - fraction)
+			if (lower + 1 < bandCount) rawBands[lower + 1] = (rawBands[lower + 1] ?? 0) + power * fraction
 		}
 		const masks = hpssMask(rawBands, hpssHistory)
 		hpssHistory.push(rawBands)
