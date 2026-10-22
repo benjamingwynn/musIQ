@@ -34,6 +34,25 @@ test("shared feature timeline produces finite truthful segment fields", () => {
 	}
 })
 
+// With a 2048-point FFT, these bands contain no bin centres at the respective
+// sample rates. Energy must still reach them for low-frequency tones.
+for (const {sampleRate, frequency, bandIndex} of [
+	{sampleRate: 44100, frequency: 75, bandIndex: 2},
+	{sampleRate: 48000, frequency: 60, bandIndex: 1},
+]) {
+	test(`log spectrum populates band ${bandIndex} at ${sampleRate} Hz`, () => {
+		const audio = sine(frequency, 1, sampleRate)
+		const timeline = extractFeatureTimeline(audio, sampleRate)
+		const middleFrame = timeline.frames[Math.floor(timeline.frames.length / 2)]!
+		assert.ok(middleFrame.bands[bandIndex]! > 0, `frame band ${bandIndex} was empty`)
+
+		const loudness = extractLoudnessTimeline([audio], sampleRate, 1)
+		const segments = makeSegments(timeline, loudness)
+		const middleSegment = segments[Math.floor(segments.length / 2)]!
+		assert.ok(middleSegment.spectrum[bandIndex]! > 0, `segment spectrum[${bandIndex}] was empty`)
+	})
+}
+
 test("statistical ranges do not emit Infinity/NaN for empty sections", () => {
 	assert.deepEqual(numbersToStatisticalRange([]), {min: 0, max: 0, avg: 0})
 })
